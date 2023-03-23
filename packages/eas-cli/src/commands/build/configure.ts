@@ -1,0 +1,116 @@
+import { Platform, Workflow } from '@expo/ncrl-build-job';
+import { Flags } from '@oclif/core';
+import chalk from 'chalk';
+
+import { cleanUpOldNcrlBuildGradleScriptAsync } from '../../build/android/syncProjectConfiguration';
+import { ensureProjectConfiguredAsync } from '../../build/configure';
+import NcrlCommand from '../../commandUtils/NcrlCommand';
+import Log, { learnMore } from '../../log';
+import { RequestedPlatform } from '../../platform';
+import { isExpoUpdatesInstalled } from '../../project/projectUtils';
+import { resolveWorkflowAsync } from '../../project/workflow';
+import { promptAsync } from '../../prompts';
+import { syncUpdatesConfigurationAsync as syncAndroidUpdatesConfigurationAsync } from '../../update/android/UpdatesModule';
+import { syncUpdatesConfigurationAsync as syncIosUpdatesConfigurationAsync } from '../../update/ios/UpdatesModule';
+import { getVcsClient } from '../../vcs';
+
+export default class BuildConfigure extends NcrlCommand {
+  static override description = 'configure the project to support NCRL Build';
+
+  static override flags = {
+    platform: Flags.enum({
+      description: 'Platform to configure',
+      char: 'p',
+      options: ['android', 'ios', 'all'],
+    }),
+  };
+
+  static override contextDefinition = {
+    ...this.ContextOptions.ProjectConfig,
+    ...this.ContextOptions.LoggedIn,
+  };
+
+  async runAsync(): Promise<void> {
+    const { flags } = await this.parse(BuildConfigure);
+    const {
+      projectConfig: { exp, projectId, projectDir },
+      loggedIn: { graphqlClient },
+    } = await this.getContextAsync(BuildConfigure, {
+      nonInteractive: false,
+    });
+
+    Log.log(
+      '💡 The following process will configure your iOS and/or Android project to be compatible with NCRL Build. These changes only apply to your local project files and you can safely revert them at any time.'
+    );
+
+    await getVcsClient().ensureRepoExistsAsync();
+
+    const expoUpdatesIsInstalled = isExpoUpdatesInstalled(projectDir);
+
+    const platform =
+      (flags.platform as RequestedPlatform | undefined) ?? (await promptForPlatformAsync());
+
+    // clean up old Android configuration
+    if ([RequestedPlatform.Android, RequestedPlatform.All].includes(platform)) {
+      await cleanUpOldNcrlBuildGradleScriptAsync(projectDir);
+    }
+
+    // ensure ncrl.json exists
+    Log.newLine();
+    await ensureProjectConfiguredAsync({
+      projectDir,
+      nonInteractive: false,
+    });
+
+    // configure expo-updates
+    if (expoUpdatesIsInstalled) {
+      if ([RequestedPlatform.Android, RequestedPlatform.All].includes(platform)) {
+        const workflow = await resolveWorkflowAsync(projectDir, Platform.ANDROID);
+        if (workflow === Workflow.GENERIC) {
+          await syncAndroidUpdatesConfigurationAsync(graphqlClient, projectDir, exp, projectId);
+        }
+      }
+
+      if ([RequestedPlatform.Ios, RequestedPlatform.All].includes(platform)) {
+        const workflow = await resolveWorkflowAsync(projectDir, Platform.IOS);
+        if (workflow === Workflow.GENERIC) {
+          await syncIosUpdatesConfigurationAsync(graphqlClient, projectDir, exp, projectId);
+        }
+      }
+    }
+
+    Log.addNewLineIfNone();
+
+    Log.log(`🎉 Your project is ready to build.
+
+- Run ${chalk.bold('ncrl build')} when you are ready to create your first build.
+- Once the build is completed, run ${chalk.bold('ncrl submit')} to upload the app to app stores.
+- ${learnMore('https://docs.expo.dev/build/introduction', {
+      learnMoreMessage: 'Learn more about other capabilities of NCRL Build',
+    })}`);
+  }
+}
+
+async function promptForPlatformAsync(): Promise<RequestedPlatform> {
+  Log.addNewLineIfNone();
+  const { platform } = await promptAsync({
+    type: 'select',
+    message: 'Which platforms would you like to configure for NCRL Build?',
+    name: 'platform',
+    choices: [
+      {
+        title: 'All',
+        value: RequestedPlatform.All,
+      },
+      {
+        title: 'iOS',
+        value: RequestedPlatform.Ios,
+      },
+      {
+        title: 'Android',
+        value: RequestedPlatform.Android,
+      },
+    ],
+  });
+  return platform;
+}

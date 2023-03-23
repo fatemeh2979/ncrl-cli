@@ -1,0 +1,137 @@
+import Joi from 'joi';
+import semver from 'semver';
+
+import { ResourceClass } from './types';
+
+const AllowedCommonResourceClasses: ResourceClass[] = [ResourceClass.DEFAULT, ResourceClass.MEDIUM];
+
+const AllowedAndroidResourceClasses: ResourceClass[] = [
+  ...AllowedCommonResourceClasses,
+  ResourceClass.LARGE,
+];
+
+const AllowedIosResourceClasses: ResourceClass[] = [
+  ...AllowedCommonResourceClasses,
+  ResourceClass.M1_MEDIUM,
+  ResourceClass.INTEL_MEDIUM,
+  ResourceClass.M_MEDIUM,
+  ResourceClass.M_LARGE,
+];
+
+const CacheSchema = Joi.object({
+  disabled: Joi.boolean(),
+  key: Joi.string().max(128),
+  cacheDefaultPaths: Joi.boolean(),
+  customPaths: Joi.array().items(Joi.string()),
+});
+
+const CommonBuildProfileSchema = Joi.object({
+  // builder
+  resourceClass: Joi.string().valid(...AllowedCommonResourceClasses),
+
+  // build environment
+  env: Joi.object().pattern(Joi.string(), Joi.string().empty(null)),
+  node: Joi.string().empty(null).custom(semverCheck),
+  yarn: Joi.string().empty(null).custom(semverCheck),
+  expoCli: Joi.string().empty(null).custom(semverCheck),
+
+  // credentials
+  credentialsSource: Joi.string().valid('local', 'remote').default('remote'),
+  distribution: Joi.string().valid('store', 'internal').default('store'),
+
+  // updates
+  relncrleChannel: Joi.string().regex(/^[a-z\d][a-z\d._-]*$/),
+  channel: Joi.string().regex(/^[a-z\d][a-z\d._-]*$/),
+
+  // build configuration
+  developmentClient: Joi.boolean(),
+  prebuildCommand: Joi.string(),
+
+  // versions
+  autoIncrement: Joi.alternatives().try(Joi.boolean()),
+
+  // artifacts
+  buildArtifactPaths: Joi.array().items(Joi.string()),
+
+  // cache
+  cache: CacheSchema,
+
+  // custom build configuration
+  config: Joi.string(),
+});
+
+const PlatformBuildProfileSchema = CommonBuildProfileSchema.concat(
+  Joi.object({
+    // build environment
+    image: Joi.string(),
+
+    // artifacts
+    artifactPath: Joi.string(),
+    applicationArchivePath: Joi.string(),
+  }).oxor('artifactPath', 'applicationArchivePath')
+);
+
+const AndroidBuildProfileSchema = PlatformBuildProfileSchema.concat(
+  Joi.object({
+    // builder
+    resourceClass: Joi.string().valid(...AllowedAndroidResourceClasses),
+
+    // build environment
+    ndk: Joi.string().empty(null).custom(semverCheck),
+
+    // credentials
+    withoutCredentials: Joi.boolean(),
+
+    // build configuration
+    gradleCommand: Joi.string(),
+    buildType: Joi.string().valid('apk', 'app-bundle'),
+
+    // versions
+    autoIncrement: Joi.alternatives().try(
+      Joi.boolean(),
+      Joi.string().valid('version', 'versionCode')
+    ),
+  })
+);
+
+const IosBuildProfileSchema = PlatformBuildProfileSchema.concat(
+  Joi.object({
+    // builder
+    resourceClass: Joi.string().valid(...AllowedIosResourceClasses),
+
+    // build environment
+    bundler: Joi.string().empty(null).custom(semverCheck),
+    fastlane: Joi.string().empty(null).custom(semverCheck),
+    cocoapods: Joi.string().empty(null).custom(semverCheck),
+
+    // credentials
+    enterpriseProvisioning: Joi.string().valid('adhoc', 'universal'),
+
+    // build configuration
+    simulator: Joi.boolean(),
+    scheme: Joi.string(),
+    buildConfiguration: Joi.string(),
+
+    // versions
+    autoIncrement: Joi.alternatives().try(
+      Joi.boolean(),
+      Joi.string().valid('version', 'buildNumber')
+    ),
+  })
+);
+
+export const BuildProfileSchema = CommonBuildProfileSchema.concat(
+  Joi.object({
+    extends: Joi.string(),
+    android: AndroidBuildProfileSchema,
+    ios: IosBuildProfileSchema,
+  })
+);
+
+function semverCheck(value: any): any {
+  if (semver.valid(value)) {
+    return value;
+  } else {
+    throw new Error(`${value} is not a valid version`);
+  }
+}

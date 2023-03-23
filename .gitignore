@@ -1,0 +1,21 @@
+# Build directories
+packages/*/build
+packages/ncrl-cli/dist
+packages/ncrl-cli/tmp
+scripts/build
+
+# Code editors
+.idea
+.history
+.vscode
+
+# macOS
+.DS_Store
+
+# Node
+node_modules
+*-debug.log
+*-error.log
+
+# Tests
+coverage

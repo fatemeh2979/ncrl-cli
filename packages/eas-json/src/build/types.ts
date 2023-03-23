@@ -1,0 +1,124 @@
+import { Android, Cache, Ios, Platform } from '@expo/ncrl-build-job';
+
+export enum CredentialsSource {
+  LOCAL = 'local',
+  REMOTE = 'remote',
+}
+
+export enum ResourceClass {
+  DEFAULT = 'default',
+  LARGE = 'large',
+  /**
+   * @deprecated use M_MEDIUM instead
+   */
+  M1_EXPERIMENTAL = 'm1-experimental',
+  /**
+   * @deprecated use M_MEDIUM instead
+   */
+  M1_MEDIUM = 'm1-medium',
+  /**
+   * @deprecated use M_LARGE instead
+   */
+  M1_LARGE = 'm1-large',
+  INTEL_MEDIUM = 'intel-medium',
+  MEDIUM = 'medium',
+  M_MEDIUM = 'm-medium',
+  M_LARGE = 'm-large',
+}
+
+export type DistributionType = 'store' | 'internal';
+
+export type IosEnterpriseProvisioning = 'adhoc' | 'universal';
+
+export type VersionAutoIncrement = boolean | 'version';
+export type IosVersionAutoIncrement = VersionAutoIncrement | 'buildNumber';
+export type AndroidVersionAutoIncrement = VersionAutoIncrement | 'versionCode';
+
+export interface CommonBuildProfile {
+  // builder
+  resourceClass?: ResourceClass;
+
+  // build environment
+  env?: Record<string, string>;
+  node?: string;
+  yarn?: string;
+  expoCli?: string;
+
+  // credentials
+  credentialsSource: CredentialsSource;
+  distribution: DistributionType;
+
+  // updates
+  relncrleChannel?: string;
+  channel?: string;
+
+  // build configuration
+  developmentClient?: boolean;
+  prebuildCommand?: string;
+
+  // versions
+  autoIncrement?: boolean;
+
+  // artifacts
+  buildArtifactPaths?: string[];
+
+  // cache
+  cache?: Omit<Cache, 'clear'>;
+
+  // custom build configuration
+  config?: string;
+}
+
+interface PlatformBuildProfile extends Omit<CommonBuildProfile, 'autoIncrement'> {
+  // artifacts
+  /**
+   * @deprecated use applicationArchivePath
+   */
+  artifactPath?: string;
+  applicationArchivePath?: string;
+}
+
+export interface AndroidBuildProfile extends PlatformBuildProfile {
+  // build environment
+  image?: Android.BuilderEnvironment['image'];
+  ndk?: string;
+
+  // credentials
+  withoutCredentials?: boolean;
+
+  // build configuration
+  gradleCommand?: string;
+  buildType?: Android.BuildType.APK | Android.BuildType.APP_BUNDLE;
+
+  // versions
+  autoIncrement?: AndroidVersionAutoIncrement;
+}
+
+export interface IosBuildProfile extends PlatformBuildProfile {
+  // build environment
+  image?: Ios.BuilderEnvironment['image'];
+  bundler?: string;
+  fastlane?: string;
+  cocoapods?: string;
+
+  // credentials
+  enterpriseProvisioning?: IosEnterpriseProvisioning;
+
+  // build configuration
+  simulator?: boolean;
+  scheme?: string;
+  buildConfiguration?: string;
+
+  // versions
+  autoIncrement?: IosVersionAutoIncrement;
+}
+
+export type BuildProfile<TPlatform extends Platform = Platform> = TPlatform extends Platform.ANDROID
+  ? AndroidBuildProfile
+  : IosBuildProfile;
+
+export interface NcrlJsonBuildProfile extends Partial<CommonBuildProfile> {
+  extends?: string;
+  [Platform.ANDROID]?: Partial<AndroidBuildProfile>;
+  [Platform.IOS]?: Partial<IosBuildProfile>;
+}

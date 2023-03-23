@@ -1,0 +1,16 @@
+* @dsokal @wkozyra95
+
+packages/ncrl-cli/src/build @dsokal @wkozyra95
+packages/ncrl-cli/src/commands/build @dsokal @wkozyra95
+
+packages/ncrl-cli/src/submit @dsokal
+packages/ncrl-cli/src/commands/submit.ts @dsokal
+
+packages/ncrl-cli/src/update @EvanBacon @byCedric @wschurman
+packages/ncrl-cli/src/commands/update @EvanBacon @byCedric @wschurman
+
+packages/ncrl-cli/schema @bycedric
+packages/ncrl-cli/src/metadata @bycedric
+packages/ncrl-cli/src/commands/metadata @bycedric
+
+packages/ncrl-json @dsokal @wkozyra95

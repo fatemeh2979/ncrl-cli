@@ -1,0 +1,7 @@
+**/build/**
+!packages/ncrl-cli/src/commands/build/**
+!packages/ncrl-cli/src/build/**
+
+packages/ncrl-cli/src/graphql/generated.ts
+
+node_modules

@@ -1,0 +1,89 @@
+import { Platform } from '@expo/ncrl-build-job';
+import { NcrlJsonAccessor } from '@expo/ncrl-json';
+import { Flags } from '@oclif/core';
+import chalk from 'chalk';
+import path from 'path';
+
+import { ensureProjectConfiguredAsync } from '../../build/configure';
+import NcrlCommand from '../../commandUtils/NcrlCommand';
+import { CredentialsContext } from '../../credentials/context';
+import Log, { learnMore } from '../../log';
+import { downloadMetadataAsync } from '../../metadata/download';
+import { handleMetadataError } from '../../metadata/errors';
+import { getProfilesAsync } from '../../utils/profiles';
+
+export default class MetadataPull extends NcrlCommand {
+  static override description = 'generate the local store configuration from the app stores';
+
+  static override flags = {
+    profile: Flags.string({
+      char: 'e',
+      description:
+        'Name of the submit profile from ncrl.json. Defaults to "production" if defined in ncrl.json.',
+    }),
+  };
+
+  static override contextDefinition = {
+    ...this.ContextOptions.ProjectConfig,
+    ...this.ContextOptions.LoggedIn,
+    ...this.ContextOptions.Analytics,
+  };
+
+  async runAsync(): Promise<void> {
+    Log.warn('NCRL Metadata is in beta and subject to breaking changes.');
+
+    const { flags } = await this.parse(MetadataPull);
+    const {
+      loggedIn: { actor, graphqlClient },
+      projectConfig: { exp, projectId, projectDir },
+      analytics,
+    } = await this.getContextAsync(MetadataPull, {
+      nonInteractive: false,
+    });
+
+    // this command is interactive (all nonInteractive flags passed to utility functions are false)
+    await ensureProjectConfiguredAsync({ projectDir, nonInteractive: false });
+
+    const submitProfiles = await getProfilesAsync({
+      type: 'submit',
+      ncrlJsonAccessor: new NcrlJsonAccessor(projectDir),
+      platforms: [Platform.IOS],
+      profileName: flags.profile,
+    });
+
+    if (submitProfiles.length !== 1) {
+      throw new Error('Metadata only supports iOS and a single submit profile.');
+    }
+
+    const submitProfile = submitProfiles[0].profile;
+    const credentialsCtx = new CredentialsContext({
+      projectInfo: { exp, projectId },
+      projectDir,
+      user: actor,
+      graphqlClient,
+      analytics,
+      nonInteractive: false,
+    });
+
+    try {
+      const filePath = await downloadMetadataAsync({
+        analytics,
+        exp,
+        credentialsCtx,
+        projectDir,
+        profile: submitProfile,
+      });
+      const relativePath = path.relative(process.cwd(), filePath);
+
+      Log.addNewLineIfNone();
+      Log.log(`🎉 Your store config is ready.
+
+- Update the ${chalk.bold(relativePath)} file to prepare the app information.
+- Run ${chalk.bold('ncrl submit')} or manually upload a new app version to the app stores.
+- Once the app is uploaded, run ${chalk.bold('ncrl metadata:push')} to sync the store config.
+- ${learnMore('https://docs.expo.dev/ncrl-metadata/introduction/')}`);
+    } catch (error: any) {
+      handleMetadataError(error);
+    }
+  }
+}

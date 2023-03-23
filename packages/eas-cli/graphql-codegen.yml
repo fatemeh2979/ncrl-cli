@@ -1,0 +1,22 @@
+overwrite: true
+schema: 'https://staging-api.expo.dev/graphql'
+documents:
+  - 'src/graphql/**/!(*.d).{ts,tsx}'
+  - 'src/credentials/ios/api/graphql/**/!(*.d).{ts,tsx}'
+  - 'src/credentials/android/api/graphql/**/!(*.d).{ts,tsx}'
+  - 'src/commands/**/*.ts'
+  - 'src/branch/**/*.ts'
+  - 'src/channel/**/*.ts'
+generates:
+  src/graphql/generated.ts:
+    plugins:
+      - 'typescript'
+      - 'typescript-operations'
+    config:
+      dedupeOperationSuffix: true
+    hooks:
+      afterOneFileWrite:
+        - 'node ./scripts/annotate-graphql-codegen.js'
+  ./graphql.schema.json:
+    plugins:
+      - 'introspection'

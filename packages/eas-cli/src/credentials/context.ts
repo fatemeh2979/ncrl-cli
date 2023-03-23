@@ -1,0 +1,132 @@
+import { ExpoConfig } from '@expo/config';
+import { Env } from '@expo/ncrl-build-job';
+import { NcrlJson } from '@expo/ncrl-json';
+import chalk from 'chalk';
+
+import { Analytics } from '../analytics/AnalyticsManager';
+import { ExpoGraphqlClient } from '../commandUtils/context/contextUtils/createGraphqlClient';
+import Log from '../log';
+import { getExpoConfig } from '../project/expoConfig';
+import { confirmAsync } from '../prompts';
+import { Actor } from '../user/User';
+import * as AndroidGraphqlClient from './android/api/GraphqlClient';
+import * as IosGraphqlClient from './ios/api/GraphqlClient';
+import AppStoreApi from './ios/appstore/AppStoreApi';
+import { AuthenticationMode } from './ios/appstore/authenticateTypes';
+
+export type CredentialsContextProjectInfo = {
+  exp: ExpoConfig;
+  projectId: string;
+};
+
+export class CredentialsContext {
+  public readonly android = AndroidGraphqlClient;
+  public readonly appStore = new AppStoreApi();
+  public readonly ios = IosGraphqlClient;
+  public readonly nonInteractive: boolean;
+  public readonly projectDir: string;
+  public readonly user: Actor;
+  public readonly graphqlClient: ExpoGraphqlClient;
+  public readonly analytics: Analytics;
+  public readonly ncrlJsonCliConfig?: NcrlJson['cli'];
+
+  private shouldAskAuthenticateAppStore: boolean = true;
+
+  private projectInfo: CredentialsContextProjectInfo | null;
+
+  constructor(
+    private options: {
+      // if null, this implies not running in a project context
+      projectInfo: CredentialsContextProjectInfo | null;
+      ncrlJsonCliConfig?: NcrlJson['cli'];
+      nonInteractive: boolean;
+      projectDir: string;
+      user: Actor;
+      graphqlClient: ExpoGraphqlClient;
+      analytics: Analytics;
+      env?: Env;
+    }
+  ) {
+    this.ncrlJsonCliConfig = options.ncrlJsonCliConfig;
+    this.projectDir = options.projectDir;
+    this.user = options.user;
+    this.graphqlClient = options.graphqlClient;
+    this.analytics = options.analytics;
+    this.nonInteractive = options.nonInteractive ?? false;
+    this.projectInfo = options.projectInfo;
+  }
+
+  static getExpoConfigInProject(
+    projectDir: string,
+    { env }: { env?: Env } = {}
+  ): ExpoConfig | null {
+    try {
+      return getExpoConfig(projectDir, { env });
+    } catch {
+      // ignore error, context might be created outside of expo project
+      return null;
+    }
+  }
+
+  get hasProjectContext(): boolean {
+    return !!this.projectInfo;
+  }
+
+  get exp(): ExpoConfig {
+    this.ensureProjectContext();
+    return this.projectInfo!.exp;
+  }
+
+  get projectId(): string {
+    this.ensureProjectContext();
+    return this.projectInfo!.projectId;
+  }
+
+  public ensureProjectContext(): void {
+    if (this.hasProjectContext) {
+      return;
+    }
+    // trigger getConfig error
+    getExpoConfig(this.options.projectDir);
+  }
+
+  async bestEffortAppStoreAuthenticatnCRlync(): Promise<void> {
+    if (this.appStore.authCtx || !this.shouldAskAuthenticateAppStore) {
+      // skip prompts if already have apple ctx or already asked about it
+      return;
+    }
+
+    if (this.nonInteractive) {
+      return;
+    }
+
+    if (this.appStore.defaultAuthenticationMode === AuthenticationMode.API_KEY) {
+      await this.appStore.ensureAuthenticatedAsync();
+      return;
+    }
+
+    Log.log(
+      chalk.green(
+        'If you provide your Apple account credentials we will be able to generate all necessary build credentials and fully validate them.'
+      )
+    );
+    Log.log(
+      chalk.green(
+        'This is optional, but without Apple account access you will need to provide all the missing values manually and we can only run minimal validation on them.'
+      )
+    );
+    const confirm = await confirmAsync({
+      message: `Do you want to log in to your Apple account?`,
+    });
+    if (confirm) {
+      await this.appStore.ensureAuthenticatedAsync();
+    } else {
+      Log.log(
+        chalk.green(
+          'No problem! 👌 If any of the next steps will require Apple account access we will ask you again about it.'
+        )
+      );
+    }
+    this.shouldAskAuthenticateAppStore = false;
+  }
+}

@@ -1,0 +1,92 @@
+import { Flags } from '@oclif/core';
+
+import { selectBranchOnAppAsync } from '../../branch/queries';
+import NcrlCommand from '../../commandUtils/NcrlCommand';
+import { NcrlNonInteractiveAndJsonFlags } from '../../commandUtils/flags';
+import {
+  NcrlPaginatedQueryFlags,
+  getLimitFlagWithCustomValues,
+  getPaginatedQueryOptions,
+} from '../../commandUtils/pagination';
+import {
+  listAndRenderUpdateGroupsOnAppAsync,
+  listAndRenderUpdateGroupsOnBranchAsync,
+} from '../../update/queries';
+import { enableJsonOutput } from '../../utils/json';
+
+export default class UpdateList extends NcrlCommand {
+  static override description = 'view the recent updates';
+
+  static override flags = {
+    branch: Flags.string({
+      description: 'List updates only on this branch',
+      exclusive: ['all'],
+    }),
+    all: Flags.boolean({
+      description: 'List updates on all branches',
+      exclusive: ['branch'],
+      default: false,
+    }),
+    ...NcrlPaginatedQueryFlags,
+    limit: getLimitFlagWithCustomValues({ defaultTo: 25, limit: 50 }),
+    ...NcrlNonInteractiveAndJsonFlags,
+  };
+
+  static override contextDefinition = {
+    ...this.ContextOptions.ProjectConfig,
+    ...this.ContextOptions.LoggedIn,
+  };
+
+  async runAsync(): Promise<void> {
+    const { flags } = await this.parse(UpdateList);
+    const { branch: branchFlag, all, json: jsonFlag, 'non-interactive': nonInteractive } = flags;
+    const {
+      projectConfig: { projectId },
+      loggedIn: { graphqlClient },
+    } = await this.getContextAsync(UpdateList, {
+      nonInteractive,
+    });
+    const paginatedQueryOptions = getPaginatedQueryOptions(flags);
+
+    if (jsonFlag) {
+      enableJsonOutput();
+    }
+
+    if (all) {
+      listAndRenderUpdateGroupsOnAppAsync(graphqlClient, { projectId, paginatedQueryOptions });
+    } else {
+      if (branchFlag) {
+        listAndRenderUpdateGroupsOnBranchAsync(graphqlClient, {
+          projectId,
+          branchName: branchFlag,
+          paginatedQueryOptions,
+        });
+      } else {
+        const validationMessage = 'Branch name may not be empty.';
+        if (nonInteractive) {
+          throw new Error(validationMessage);
+        }
+
+        const selectedBranch = await selectBranchOnAppAsync(graphqlClient, {
+          projectId,
+          promptTitle: 'Which branch would you like to view?',
+          displayTextForListItem: updateBranch => ({
+            title: updateBranch.name,
+          }),
+          paginatedQueryOptions:
+            // discard limit and offset because this query is not those flag's intended target
+            {
+              json: paginatedQueryOptions.json,
+              nonInteractive: paginatedQueryOptions.nonInteractive,
+              offset: 0,
+            },
+        });
+        listAndRenderUpdateGroupsOnBranchAsync(graphqlClient, {
+          projectId,
+          branchName: selectedBranch.name,
+          paginatedQueryOptions,
+        });
+      }
+    }
+  }
+}

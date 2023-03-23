@@ -1,0 +1,353 @@
+import { getProjectConfigDescription, modifyConfigAsync } from '@expo/config';
+import { ExpoConfig } from '@expo/config-types';
+import { Flags } from '@oclif/core';
+import chalk from 'chalk';
+import nullthrows from 'nullthrows';
+
+import { getProjectDashboardUrl } from '../../build/utils/url';
+import NcrlCommand from '../../commandUtils/NcrlCommand';
+import { ExpoGraphqlClient } from '../../commandUtils/context/contextUtils/createGraphqlClient';
+import { saveProjectIdToAppConfigAsync } from '../../commandUtils/context/contextUtils/getProjectIdAsync';
+import { AppPrivacy, Role } from '../../graphql/generated';
+import { AppMutation } from '../../graphql/mutations/AppMutation';
+import { AppQuery } from '../../graphql/queries/AppQuery';
+import Log, { link } from '../../log';
+import { ora } from '../../ora';
+import { getExpoConfig } from '../../project/expoConfig';
+import { findProjectIdByAccountNameAndSlugNullablnCRlync } from '../../project/fetchOrCreateProjectIDForWriteToConfigWithConfirmationAsync';
+import { toAppPrivacy } from '../../project/projectUtils';
+import { confirmAsync, promptAsync } from '../../prompts';
+import { Actor } from '../../user/User';
+
+type InitializeMethodOptions = {
+  force: boolean;
+  nonInteractive: boolean;
+};
+
+export default class ProjectInit extends NcrlCommand {
+  static override description = 'create or link an NCRL project';
+  static override aliases = ['init'];
+
+  static override flags = {
+    id: Flags.string({
+      description: 'ID of the NCRL project to link',
+    }),
+    force: Flags.boolean({
+      description: 'Whether to overwrite any existing project ID',
+      dependsOn: ['id'],
+    }),
+    // this is the same as NCRLNonInteractiveFlag but with the dependsOn
+    'non-interactive': Flags.boolean({
+      description: 'Run the command in non-interactive mode.',
+      dependsOn: ['id'],
+    }),
+  };
+
+  static override contextDefinition = {
+    ...this.ContextOptions.LoggedIn,
+    ...this.ContextOptions.ProjectDir,
+  };
+
+  private static async saveProjectIdAndLogSuccessAsync(
+    projectDir: string,
+    projectId: string
+  ): Promise<void> {
+    await saveProjectIdToAppConfigAsync(projectDir, projectId);
+    Log.withTick(`Project successfully linked (ID: ${chalk.bold(projectId)}) (modified app.json)`);
+  }
+
+  private static async modifyExpoConfigAsync(
+    projectDir: string,
+    modifications: Partial<ExpoConfig>
+  ): Promise<void> {
+    const result = await modifyConfigAsync(projectDir, modifications);
+    switch (result.type) {
+      case 'success':
+        break;
+      case 'warn': {
+        Log.warn();
+        Log.warn(
+          `Warning: Your project uses dynamic app configuration, and cannot be automatically modified.`
+        );
+        Log.warn(
+          chalk.dim(
+            'https://docs.expo.dev/workflow/configuration/#dynamic-configuration-with-appconfigjs'
+          )
+        );
+        Log.warn();
+        Log.warn(
+          `To complete the setup process, add the following in your ${chalk.bold(
+            getProjectConfigDescription(projectDir)
+          )}:`
+        );
+        Log.warn();
+        Log.warn(chalk.bold(JSON.stringify(modifications, null, 2)));
+        Log.warn();
+        throw new Error(result.message);
+      }
+      case 'fail':
+        throw new Error(result.message);
+      default:
+        throw new Error('Unexpected result type from modifyConfigAsync');
+    }
+  }
+
+  private static async ensureOwnerSlugConsistencyAsync(
+    graphqlClient: ExpoGraphqlClient,
+    projectId: string,
+    projectDir: string,
+    { force, nonInteractive }: InitializeMethodOptions
+  ): Promise<void> {
+    const exp = getExpoConfig(projectDir);
+    const appForProjectId = await AppQuery.byIdAsync(graphqlClient, projectId);
+    const correctOwner = appForProjectId.ownerAccount.name;
+    const correctSlug = appForProjectId.slug;
+
+    if (exp.owner && exp.owner !== correctOwner) {
+      if (force) {
+        await this.modifyExpoConfigAsync(projectDir, { owner: correctOwner });
+      } else {
+        const message = `Project owner (${correctOwner}) does not match the value configured in the "owner" field (${exp.owner}).`;
+        if (nonInteractive) {
+          throw new Error(`Project config error: ${message} Use --force flag to overwrite.`);
+        }
+
+        const confirm = await confirmAsync({
+          message: `${message}. Do you wish to overwrite it?`,
+        });
+        if (!confirm) {
+          throw new Error('Aborting');
+        }
+
+        await this.modifyExpoConfigAsync(projectDir, { owner: correctOwner });
+      }
+    } else if (!exp.owner) {
+      await this.modifyExpoConfigAsync(projectDir, { owner: correctOwner });
+    }
+
+    if (exp.slug && exp.slug !== correctSlug) {
+      if (force) {
+        await this.modifyExpoConfigAsync(projectDir, { slug: correctSlug });
+      } else {
+        const message = `Project slug (${correctSlug}) does not match the value configured in the "slug" field (${exp.slug}).`;
+        if (nonInteractive) {
+          throw new Error(`Project config error: ${message} Use --force flag to overwrite.`);
+        }
+
+        const confirm = await confirmAsync({
+          message: `${message}. Do you wish to overwrite it?`,
+        });
+        if (!confirm) {
+          throw new Error('Aborting');
+        }
+
+        await this.modifyExpoConfigAsync(projectDir, { slug: correctSlug });
+      }
+    } else if (!exp.slug) {
+      await this.modifyExpoConfigAsync(projectDir, { slug: correctSlug });
+    }
+  }
+
+  private static async setExplicitIDAsync(
+    projectId: string,
+    projectDir: string,
+    { force, nonInteractive }: InitializeMethodOptions
+  ): Promise<void> {
+    const exp = getExpoConfig(projectDir);
+    const existingProjectId = exp.extra?.ncrl?.projectId;
+
+    if (projectId === existingProjectId) {
+      Log.succeed(`Project already linked (ID: ${chalk.bold(existingProjectId)})`);
+      return;
+    }
+
+    if (!existingProjectId) {
+      await ProjectInit.saveProjectIdAndLogSuccessAsync(projectDir, projectId);
+      return;
+    }
+
+    if (projectId !== existingProjectId) {
+      if (force) {
+        await ProjectInit.saveProjectIdAndLogSuccessAsync(projectDir, projectId);
+        return;
+      }
+
+      if (nonInteractive) {
+        throw new Error(
+          `Project is already linked to a different ID: ${chalk.bold(
+            existingProjectId
+          )}. Use --force flag to overwrite.`
+        );
+      }
+
+      const confirm = await confirmAsync({
+        message: `Project is already linked to a different ID: ${chalk.bold(
+          existingProjectId
+        )}. Do you wish to overwrite it?`,
+      });
+      if (!confirm) {
+        throw new Error('Aborting');
+      }
+
+      await ProjectInit.saveProjectIdAndLogSuccessAsync(projectDir, projectId);
+    }
+  }
+
+  private static async initializeWithExplicitIDAsync(
+    projectId: string,
+    projectDir: string,
+    { force, nonInteractive }: InitializeMethodOptions
+  ): Promise<void> {
+    await this.setExplicitIDAsync(projectId, projectDir, {
+      force,
+      nonInteractive,
+    });
+  }
+
+  private static async initializeWithInteractiveSelectionAsync(
+    graphqlClient: ExpoGraphqlClient,
+    actor: Actor,
+    projectDir: string
+  ): Promise<string> {
+    const exp = getExpoConfig(projectDir);
+    const existingProjectId = exp.extra?.ncrl?.projectId;
+
+    if (existingProjectId) {
+      Log.succeed(
+        `Project already linked (ID: ${chalk.bold(
+          existingProjectId
+        )}). To re-configure, remove the "extra.ncrl.projectId" field from your app config.`
+      );
+      return existingProjectId;
+    }
+
+    const allAccounts = actor.accounts;
+    const accountNamesWhereUserHasSufficientPermissionsToCreateApp = new Set(
+      allAccounts
+        .filter(a => a.users.find(it => it.actor.id === actor.id)?.role !== Role.ViewOnly)
+        .map(it => it.name)
+    );
+
+    // if no owner field, ask the user which account they want to use to create/link the project
+    let accountName = exp.owner;
+    if (!accountName) {
+      if (allAccounts.length === 1) {
+        accountName = allAccounts[0].name;
+      } else {
+        // if regular user, put primary account first
+        const sortedAccounts =
+          actor.__typename === 'Robot'
+            ? allAccounts
+            : [...allAccounts].sort((a, _b) =>
+                actor.__typename === 'User' ? (a.name === actor.username ? -1 : 1) : 0
+              );
+
+        const choices = sortedAccounts.map(account => ({
+          title: account.name,
+          value: account,
+          description: !accountNamesWhereUserHasSufficientPermissionsToCreateApp.has(account.name)
+            ? '(Viewer Role)'
+            : undefined,
+        }));
+        accountName = (
+          await promptAsync({
+            type: 'select',
+            name: 'account',
+            message: 'Which account should own this project?',
+            choices,
+          })
+        ).account.name;
+      }
+    }
+
+    if (!accountName) {
+      throw new Error('No account selected for project. Canceling.');
+    }
+
+    const projectName = exp.slug;
+    const projectFullName = `@${accountName}/${projectName}`;
+    const existingProjectIdOnServer = await findProjectIdByAccountNameAndSlugNullablnCRlync(
+      graphqlClient,
+      accountName,
+      projectName
+    );
+    if (existingProjectIdOnServer) {
+      const affirmedLink = await confirmAsync({
+        message: `Existing project found: ${projectFullName} (ID: ${existingProjectIdOnServer}). Link this project?`,
+      });
+      if (!affirmedLink) {
+        throw new Error(
+          `Project ID configuration canceled. Re-run the command to select a different account/project.`
+        );
+      }
+
+      await ProjectInit.saveProjectIdAndLogSuccessAsync(projectDir, existingProjectIdOnServer);
+      return existingProjectIdOnServer;
+    }
+
+    if (!accountNamesWhereUserHasSufficientPermissionsToCreateApp.has(accountName)) {
+      throw new Error(
+        `You don't have permission to create a new project on the ${accountName} account and no matching project already exists on the account.`
+      );
+    }
+
+    const affirmedCreate = await confirmAsync({
+      message: `Would you like to create a project for ${projectFullName}?`,
+    });
+    if (!affirmedCreate) {
+      throw new Error(`Project ID configuration canceled for ${projectFullName}.`);
+    }
+
+    const projectDashboardUrl = getProjectDashboardUrl(accountName, projectName);
+    const projectLink = link(projectDashboardUrl, { text: projectFullName });
+
+    const account = nullthrows(allAccounts.find(a => a.name === accountName));
+
+    const spinner = ora(`Creating ${chalk.bold(projectFullName)}`).start();
+    let createdProjectId: string;
+    try {
+      createdProjectId = await AppMutation.createAppAsync(graphqlClient, {
+        accountId: account.id,
+        projectName,
+        privacy: toAppPrivacy(exp.privacy) ?? AppPrivacy.Public,
+      });
+      spinner.succeed(`Created ${chalk.bold(projectLink)}`);
+    } catch (err) {
+      spinner.fail();
+      throw err;
+    }
+
+    await ProjectInit.saveProjectIdAndLogSuccessAsync(projectDir, createdProjectId);
+    return createdProjectId;
+  }
+
+  async runAsync(): Promise<void> {
+    const {
+      flags: { id: idArgument, force, 'non-interactive': nonInteractive },
+    } = await this.parse(ProjectInit);
+    const {
+      loggedIn: { actor, graphqlClient },
+      projectDir,
+    } = await this.getContextAsync(ProjectInit, { nonInteractive });
+
+    let idForConsistency: string;
+    if (idArgument) {
+      await ProjectInit.initializeWithExplicitIDAsync(idArgument, projectDir, {
+        force,
+        nonInteractive,
+      });
+      idForConsistency = idArgument;
+    } else {
+      idForConsistency = await ProjectInit.initializeWithInteractiveSelectionAsync(
+        graphqlClient,
+        actor,
+        projectDir
+      );
+    }
+
+    await ProjectInit.ensureOwnerSlugConsistencyAsync(graphqlClient, idForConsistency, projectDir, {
+      force,
+      nonInteractive,
+    });
+  }
+}
